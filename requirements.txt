@@ -1,10 +1,6 @@
-pip<25
-numpy<2
-streamlit==1.37.1
-pandas==2.2.2
-matplotlib==3.8.4
-wordcloud==1.9.3
+streamlit==1.50.0
+pandas==2.3.3
+matplotlib==3.10.0
+wordcloud==1.9.4
 PyPDF2==3.0.1
-spacy==3.7.5
-# Modelo pt-br do spaCy (instala na etapa de build)
-pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.7.0/pt_core_news_sm-3.7.0-py3-none-any.whl
+# Removido spaCy para evitar falhas de build (blis) no Python 3.13 no Streamlit Cloud.
