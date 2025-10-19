@@ -1,145 +1,150 @@
+
 import streamlit as st
 import re
-from typing import List
-import PyPDF2
 import pandas as pd
+import PyPDF2
 import matplotlib.pyplot as plt
-from wordcloud import WordCloud
 
 st.set_page_config(page_title="Extrator Financeiro de PDFs (pt-BR)", page_icon="📄", layout="wide")
 st.title("📄 Extrator Financeiro de PDFs (pt-BR)")
-st.caption("Analise relatórios contábeis e financeiros em PDF — compatível com Streamlit Cloud (sem spaCy).")
+st.caption("Versão simples e compatível com Streamlit Cloud (sem spaCy, sem Colab).")
 
-BASIC_PT_STOPWORDS = {"a","à","ao","aos","ainda","além","algum","alguns","alguma","algumas","ambos","antes","após","até","com","como","contra","cada","cujo","cuja","cujos","cujas","de","da","das","do","dos","dela","dele","delas","deles","desde","depois","dentro","e","é","era","eram","essa","essas","esse","esses","esta","estas","este","estes","está","estão","eu","foi","foram","havia","há","isso","isto","já","lá","lhe","lhes","mais","mas","mesmo","muito","muitos","muita","muitas","na","nas","não","nem","nos","nós","o","os","ou","para","pela","pelas","pelo","pelos","per","por","qual","quais","quando","que","se","sem","seu","seus","sua","suas","sob","sobre","são","também","te","tem","têm","tinha","têm","tu","tua","tuas","um","uma","uns","umas","vai","vão","você","vocês"}
-
-def extract_text_from_pdf(file) -> str:
+# -----------------------------
+# 🧾 Extração de texto do PDF
+# -----------------------------
+def extract_text_from_pdf(file):
     try:
         reader = PyPDF2.PdfReader(file)
-        texts = []
-        for page in reader.pages:
-            try:
-                txt = page.extract_text() or ""
-            except Exception:
-                txt = ""
-            texts.append(txt)
-        return " ".join(texts)
+        return " ".join([page.extract_text() or "" for page in reader.pages])
     except Exception as e:
         st.error(f"Erro ao ler o PDF: {e}")
         return ""
 
-def clean_text(text: str) -> str:
-    text = re.sub(r"\\s+", " ", text)
-    text = re.sub(r"[^\\w\\s,\\.\\d]", "", text)
-    return text.lower()
-
-def tokenize_basic(text: str) -> List[str]:
-    text_sep = re.sub(r"[,\\.]", " ", text)
-    raw = re.split(r"[^\\w\\d]+", text_sep)
-    tokens = [t for t in (w.strip() for w in raw) if t]
-    tokens = [t for t in tokens if t not in BASIC_PT_STOPWORDS]
-    return tokens
-
-def find_keywords(tokens: List[str], keywords: List[str]):
-    kw = set(k.lower().strip() for k in keywords if k.strip())
-    return [i for i, tok in enumerate(tokens) if tok in kw]
-
-def extract_values(tokens: List[str], indices: List[int], num_values: int = 3):
-    for idx in indices:
-        vals = []
-        ok = True
-        for i in range(1, num_values + 1):
-            try:
-                t = tokens[idx + i]
-                norm = t.replace(".", "").replace(",", ".")
-                vals.append(float(norm))
-            except Exception:
-                ok = False
-                break
-        if ok and vals:
-            return vals
+# ✅ Extrai 3 valores após o rótulo (padrão brasileiro 1.234,56)
+def extract_multiple_numbers(text, label):
+    pattern = rf"{label}\s+(\d{{1,3}}(?:\.\d{{3}})*,\d{{1,2}})\s+(\d{{1,3}}(?:\.\d{{3}})*,\d{{1,2}})\s+(\d{{1,3}}(?:\.\d{{3}})*,\d{{1,2}})"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    if match:
+        return [float(v.replace(".", "").replace(",", ".")) for v in match.groups()]
     return []
 
-def plot_bar(labels, vals, title, ylabel):
-    fig = plt.figure(figsize=(6, 4))
-    bars = plt.bar(labels, vals)
-    for bar in bars:
-        h = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, h, f"{h:.2f}", ha="center", va="bottom")
-    plt.title(title)
-    plt.ylabel(ylabel)
-    plt.grid(axis="y", linestyle="--", alpha=0.7)
-    st.pyplot(fig)
+# 🎯 Tenta múltiplos rótulos sinônimos
+def try_extract_any(text, label_options):
+    for label in label_options:
+        result = extract_multiple_numbers(text, label)
+        if result:
+            return result, label
+    return [], None
 
+# 🗓️ Extrai períodos (ex.: 3T24)
+def extract_periods(text):
+    period_pattern = r"\b\d{1,2}T\d{2}\b"
+    periods = re.findall(period_pattern, text)
+    # Remove duplicatas mantendo ordem
+    seen = set()
+    ordered = []
+    for p in periods:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
+
+# -----------------------------
+# 🔧 Configurações (sidebar)
+# -----------------------------
 with st.sidebar:
     st.header("⚙️ Configurações")
-    default_periodos = "3T24,2T24,3T23"
-    periodos_str = st.text_input("Períodos (separados por vírgula)", value=default_periodos)
-    periodos = [p.strip() for p in periodos_str.split(",") if p.strip()]
+    st.write("Ajuste os sinônimos dos rótulos se seu PDF usa nomenclaturas diferentes.")
 
-    st.subheader("🔎 Palavras-chave")
-    kw_lucro = st.text_input("Lucro (lista separada por vírgula)", value="lucro, líquido")
-    kw_capt = st.text_input("Captação (lista separada por vírgula)", value="captação, total")
-    irrelevant = st.text_input("Tokens irrelevantes (remover)", value="p.p, r, milhão")
-    num_vals = st.number_input("Qtd. de valores após a palavra-chave", min_value=1, max_value=6, value=3, step=1)
-    st.subheader("☁️ Nuvem de palavras")
-    min_freq = st.number_input("Frequência mínima para exibir", min_value=1, value=1, step=1)
-    max_words = st.number_input("Máx. palavras na nuvem", min_value=10, value=200, step=10)
+    default_labels = {
+        "Lucro Líquido": "Lucro Líquido, Lucro Líquido Recorrente, Lucro Líquido Contábil",
+        "Captação Total": "Captação Total, Captações Totais",
+        "Total de Ativos": "Total de Ativos, Ativos Totais"
+    }
 
-uploaded = st.file_uploader("📎 Envie um PDF com relatório contábil/financeiro", type=["pdf"])
+    lucro_opts = st.text_input("Sinônimos - Lucro Líquido", value=default_labels["Lucro Líquido"])
+    capt_opts  = st.text_input("Sinônimos - Captação Total", value=default_labels["Captação Total"])
+    ativo_opts = st.text_input("Sinônimos - Total de Ativos", value=default_labels["Total de Ativos"])
+
+    min_bars = st.number_input("Mínimo de períodos para mostrar gráficos", min_value=1, max_value=6, value=2)
+
+labels = {
+    "Lucro Líquido": [s.strip() for s in lucro_opts.split(",") if s.strip()],
+    "Captação Total": [s.strip() for s in capt_opts.split(",") if s.strip()],
+    "Total de Ativos": [s.strip() for s in ativo_opts.split(",") if s.strip()],
+}
+
+# -----------------------------
+# 📎 Upload
+# -----------------------------
+uploaded = st.file_uploader("📎 Envie um PDF com os dados financeiros", type=["pdf"])
 
 if uploaded is not None:
-    text = extract_text_from_pdf(uploaded)
-    cleaned = clean_text(text)
-    tokens = tokenize_basic(cleaned)
+    # Etapa 1: Extração do texto
+    raw_text = extract_text_from_pdf(uploaded)
 
-    st.subheader("🧾 Amostra do texto")
-    st.code(cleaned[:800] + ("..." if len(cleaned) > 800 else ""), language="text")
+    # Etapa 2: Limpeza de quebras de linha e espaços
+    text = re.sub(r"\n+", " ", raw_text)
+    text = re.sub(r"\s{2,}", " ", text)
 
-    st.subheader("🧠 Amostra de tokens (50)")
-    st.write(tokens[:50])
+    # Etapa 3: Períodos
+    periods = extract_periods(text)
+    st.subheader("📅 Períodos identificados")
+    st.write(periods if periods else "—")
 
-    irrelevant_tokens = [t.strip().lower() for t in irrelevant.split(",") if t.strip()]
-    tokens_filtered = [t for t in tokens if t not in irrelevant_tokens]
+    # Etapa 4: Extração
+    lucros_liquidos, lbl_lucro = try_extract_any(text, labels["Lucro Líquido"])
+    captacoes_totais, lbl_capt = try_extract_any(text, labels["Captação Total"])
+    ativos_totais, lbl_ativo   = try_extract_any(text, labels["Total de Ativos"])
 
-    if tokens_filtered:
-        word_freq = pd.Series(tokens_filtered).value_counts()
-        word_freq = word_freq[word_freq >= int(min_freq)]
-        if not word_freq.empty:
-            wc = WordCloud(width=800, height=400, background_color="white", max_words=int(max_words)).generate_from_frequencies(word_freq.to_dict())
-            fig = plt.figure(figsize=(10, 5))
-            plt.imshow(wc, interpolation="bilinear")
-            plt.axis("off")
-            st.pyplot(fig)
-            with st.expander("📊 Tabela de frequência de palavras"):
-                st.dataframe(word_freq.rename("frequência").to_frame())
-        else:
-            st.info("Sem palavras com a frequência mínima para a nuvem.")
-
-    keywords_lucro = [k.strip().lower() for k in kw_lucro.split(",") if k.strip()]
-    keywords_captacao = [k.strip().lower() for k in kw_capt.split(",") if k.strip()]
-
-    indices_lucro = find_keywords(tokens, keywords_lucro)
-    indices_captacao = find_keywords(tokens, keywords_captacao)
-
-    lucros_liquidos = extract_values(tokens, indices_lucro, num_values=int(num_vals))
-    captacoes_totais = extract_values(tokens, indices_captacao, num_values=int(num_vals))
-
-    st.subheader("📈 Resultados extraídos")
-    col1, col2 = st.columns(2)
+    st.subheader("📈 Valores extraídos")
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**Lucros Líquidos**")
         st.write(lucros_liquidos if lucros_liquidos else "—")
+        if lbl_lucro: st.caption(f"Rótulo encontrado: *{lbl_lucro}*")
     with col2:
         st.markdown("**Captações Totais**")
         st.write(captacoes_totais if captacoes_totais else "—")
+        if lbl_capt: st.caption(f"Rótulo encontrado: *{lbl_capt}*")
+    with col3:
+        st.markdown("**Ativos Totais**")
+        st.write(ativos_totais if ativos_totais else "—")
+        if lbl_ativo: st.caption(f"Rótulo encontrado: *{lbl_ativo}*")
 
-    if lucros_liquidos:
-        labels = periodos[:len(lucros_liquidos)] or [f"V{i+1}" for i in range(len(lucros_liquidos))]
-        plot_bar(labels, lucros_liquidos, "Lucros Líquidos por Período", "Valores (em milhões)")
-    if captacoes_totais:
-        labels = periodos[:len(captacoes_totais)] or [f"V{i+1}" for i in range(len(captacoes_totais))]
-        plot_bar(labels, captacoes_totais, "Captações Totais por Período", "Valores (em milhões)")
-    if not lucros_liquidos and not captacoes_totais:
-        st.warning("⚠️ Não foi possível extrair dados suficientes para exibir os gráficos.")
+    # Etapa 5: Gráficos
+    min_len = min(len(lucros_liquidos), len(captacoes_totais), len(ativos_totais), len(periods))
+
+    if min_len >= int(min_bars):
+        df = pd.DataFrame({
+            "Períodos": periods[:min_len],
+            "Lucros Líquidos": lucros_liquidos[:min_len],
+            "Captações Totais": captacoes_totais[:min_len],
+            "Ativos Totais": ativos_totais[:min_len],
+        })
+
+        st.subheader("📊 Gráficos")
+        indicadores = ["Lucros Líquidos", "Captações Totais", "Ativos Totais"]
+
+        for indicador in indicadores:
+            fig = plt.figure(figsize=(8, 6))
+            bars = plt.bar(df["Períodos"], df[indicador], alpha=0.7)
+            for bar in bars:
+                h = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2, h, f"{h:.2f}", ha="center", va="bottom")
+            plt.title(indicador)
+            plt.xlabel("Períodos")
+            plt.ylabel("Valores (em milhões)")
+            plt.grid(axis="y", linestyle="--", alpha=0.7)
+            st.pyplot(fig)
+
+    else:
+        st.warning("⚠️ Dados insuficientes para exibir os gráficos (mínimo configurado na sidebar).")
+
+    with st.expander("🔍 Trecho do texto bruto"):
+        st.code(text[:1200] + ("..." if len(text) > 1200 else ""), language="text")
+
+    st.info("💡 Dica: garanta que o PDF contenha expressões como 'Lucro Líquido', 'Captação Total' e 'Total de Ativos'.")
+
 else:
     st.info("Envie um arquivo PDF para começar 👆")
