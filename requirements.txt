@@ -1,6 +1,5 @@
+
 streamlit==1.50.0
 pandas==2.3.3
 matplotlib==3.10.0
-wordcloud==1.9.4
 PyPDF2==3.0.1
-# Removido spaCy para evitar build nativo (blis) no Python 3.13.
